@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Viewer with Page Range and Editing</title>
+    <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/annotator/1.2.0/annotator.min.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.10.377/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/annotator/1.2.0/annotator.min.js"></script>
+    <style>
+        body { background-color: #121212; color: white; }
+        .drop-area { border: 2px dashed #ff5722; padding: 40px; text-align: center; background-color: #1e1e1e; border-radius: 8px; }
+        .drop-area.dragging { background-color: #333; }
+        #pdf-canvas { border: 1px solid #ddd; border-radius: 8px; margin-top: 20px; }
+        .controls { margin-top: 20px; text-align: center; }
+        .highlight { background-color: rgba(255, 255, 0, 0.5); }
+        .settings { margin-top: 20px; display: none; }
+        .btn-info { margin: 5px; }
+        hr { border: 1px solid #ff5722; margin-top: 20px; margin-bottom: 20px; }
+        .ad-space { background-color: #333; padding: 20px; text-align: center; color: #fff; border-radius: 8px; margin-top: 20px; }
+    </style>
+</head>
+<body>
+<div class="container mt-5">
+    <h1 class="text-center">PDF Viewer with Page Range and Editing</h1>
+    
+    <!-- Settings Button -->
+    <button class="btn btn-info" id="settingsBtn">Settings</button>
+    
+    <!-- Settings Section (Initially Hidden) -->
+    <div id="settings" class="settings">
+        <div class="form-group">
+            <label for="themeSelect">Choose Theme:</label>
+            <select id="themeSelect" class="form-control">
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+            </select>
+        </div>
+        
+        <div class="form-group">
+            <label for="zoomLevel">Zoom Level:</label>
+            <input type="range" id="zoomLevel" min="1" max="3" step="0.1" value="1.5" class="form-control">
+        </div>
+        
+        <div class="form-group">
+            <label for="rotatePages">Enable Rotation:</label>
+            <input type="checkbox" id="rotatePages" checked class="form-control">
+        </div>
+
+        <hr>
+        <div class="ad-space">
+            <h5>Advertisement Space</h5>
+            <p>More settings or ad content can be placed here.</p>
+        </div>
+    </div>
+
+    <div id="drop-area" class="drop-area">
+        <p>Drag and Drop PDF file here</p>
+        <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">Choose File</button>
+        <input type="file" id="fileInput" style="display: none;" accept="application/pdf">
+    </div>
+
+    <div class="controls">
+        <label for="startPage">Start Page:</label>
+        <input type="number" id="startPage" min="1" value="1">
+        <label for="endPage">End Page:</label>
+        <input type="number" id="endPage" min="1" value="1">
+        <button class="btn btn-secondary" onclick="renderRange()">Load Range</button>
+        <button class="btn btn-success" id="downloadBtn" style="display: none;">Download as Image</button>
+
+        <input type="text" id="searchInput" placeholder="Search text..." class="form-control" style="width: 200px; display: inline-block;">
+        <button class="btn btn-info" onclick="searchText()">Search</button>
+        <button onclick="printPDF()" class="btn btn-warning">Print</button>
+
+        <button onclick="zoomIn()" class="btn btn-info">Zoom In</button>
+        <button onclick="zoomOut()" class="btn btn-info">Zoom Out</button>
+        <button onclick="rotatePage(90)" class="btn btn-warning">Rotate Right</button>
+        <button onclick="rotatePage(-90)" class="btn btn-warning">Rotate Left</button>
+    </div>
+
+    <canvas id="pdf-canvas"></canvas>
+</div>
+
+<script>
+// References to HTML elements
+const themeSelect = document.getElementById('themeSelect');
+const zoomLevelInput = document.getElementById('zoomLevel');
+const rotatePagesInput = document.getElementById('rotatePages');
+const settingsBtn = document.getElementById('settingsBtn');
+const dropArea = document.getElementById('drop-area'),
+      fileInput = document.getElementById('fileInput'),
+      pdfCanvas = document.getElementById('pdf-canvas'),
+      ctx = pdfCanvas.getContext('2d'),
+      startPageInput = document.getElementById('startPage'),
+      endPageInput = document.getElementById('endPage'),
+      downloadBtn = document.getElementById('downloadBtn'),
+      searchInput = document.getElementById('searchInput'),
+      settings = document.getElementById('settings');
+
+let pdfDoc = null, renderedPages = [], zoomLevel = 1.5, rotateAngle = 0;
+let annotator;
+let bookmarks = [];
+
+// Toggle settings visibility
+settingsBtn.addEventListener('click', () => {
+    settings.style.display = settings.style.display === 'none' ? 'block' : 'none';
+});
+
+// Handle file upload
+function handleFile(file) {
+    const reader = new FileReader();
+    reader.onload = e => {
+        pdfjsLib.getDocument({ data: e.target.result }).promise.then(pdf => {
+            pdfDoc = pdf;
+            endPageInput.max = pdf.numPages;
+            renderRange();
+        });
+    };
+    reader.readAsArrayBuffer(file);
+}
+
+fileInput.addEventListener('change', () => handleFile(fileInput.files[0]));
+dropArea.addEventListener('dragover', e => { e.preventDefault(); dropArea.classList.add('dragging'); });
+dropArea.addEventListener('dragleave', () => dropArea.classList.remove('dragging'));
+dropArea.addEventListener('drop', e => { e.preventDefault(); dropArea.classList.remove('dragging'); handleFile(e.dataTransfer.files[0]); });
+
+// Render a page
+function renderPage(pageNumber) {
+    return pdfDoc.getPage(pageNumber).then(page => {
+        const viewport = page.getViewport({ scale: zoomLevel });
+        pdfCanvas.width = viewport.width;
+        pdfCanvas.height = viewport.height;
+
+        const renderContext = { canvasContext: ctx, viewport: viewport };
+        return page.render(renderContext).promise.then(() => {
+            renderedPages.push(pdfCanvas.toDataURL("image/png"));
+            
+            // Initialize the annotator after rendering
+            if (!annotator) {
+                annotator = new Annotator(pdfCanvas);
+                annotator.addPlugin('Tags');
+                annotator.addPlugin('Store', {
+                    load: function() { return []; },
+                    save: function(annotations) { console.log(annotations); }
+                });
+            }
+        });
+    });
+}
+
+// Render page range
+async function renderRange() {
+    const startPage = parseInt(startPageInput.value);
+    const endPage = Math.min(parseInt(endPageInput.value), pdfDoc.numPages);
+    
+    if (startPage > endPage || startPage < 1) {
+        alert("Invalid page range.");
+        return;
+    }
+
+    renderedPages = [];
+    for (let i = startPage; i <= endPage; i++) {
+        await renderPage(i);
+        if (i < endPage) await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    downloadBtn.style.display = "block";
+}
+
+// Search text in PDF
+function searchText() {
+    const query = searchInput.value;
+    if (!pdfDoc) return alert("Please load a PDF first.");
+
+    let found = false;
+    for (let i = 1; i <= pdfDoc.numPages; i++) {
+        pdfDoc.getPage(i).then(page => {
+            page.getTextContent().then(textContent => {
+                const text = textContent.items.map(item => item.str).join('');
+                if (text.includes(query)) {
+                    alert(`Found on page ${i}`);
+                    found = true;
+                }
+            });
+        });
+    }
+
+    if (!found) {
+        alert("Text not found.");
+    }
+}
+
+// Bookmark current page
+function bookmarkPage() {
+    const currentPage = parseInt(startPageInput.value);
+    if (!bookmarks.includes(currentPage)) {
+        bookmarks.push(currentPage);
+        alert(`Page ${currentPage} bookmarked.`);
+    } else {
+        alert(`Page ${currentPage} is already bookmarked.`);
+    }
+}
+
+// Print the PDF
+function printPDF() {
+    const printWindow = window.open('', '', 'width=800,height=600');
+    printWindow.document.write('<html><head><title>Print PDF</title></head><body>');
+    printWindow.document.write('<canvas id="printCanvas"></canvas>');
+    printWindow.document.write('</body></html>');
+    printWindow.document.close();
+    
+    const printCanvas = printWindow.document.getElementById('printCanvas');
+    const printCtx = printCanvas.getContext('2d');
+    
+    printCanvas.width = pdfCanvas.width;
+    printCanvas.height = pdfCanvas.height;
+    printCtx.drawImage(pdfCanvas, 0, 0);
+    
+    printWindow.print();
+}
+
+// Download rendered pages as images
+downloadBtn.addEventListener('click', () => {
+    renderedPages.forEach((dataURL, index) => {
+        const a = document.createElement('a');
+        a.href = dataURL;
+        a.download = `page-${index + 1}.png`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+    });
+});
+
+// Zoom In/Out
+zoomLevelInput.addEventListener('input', () => {
+    zoomLevel = parseFloat(zoomLevelInput.value);
+    renderRange();
+});
+
+// Rotate Page
+rotatePagesInput.addEventListener('change', () => {
+    rotateAngle = rotatePagesInput.checked ? 90 : 0;
+    renderRange();
+});
+
+// Change Theme
+themeSelect.addEventListener('change', () => {
+    document.body.style.backgroundColor = themeSelect.value === 'light' ? '#ffffff' : '#121212';
+    document.body.style.color = themeSelect.value === 'light' ? '#000000' : '#ffffff';
+    dropArea.style.backgroundColor = themeSelect.value === 'light' ? '#f0f0f0' : '#1e1e1e';
+});
+</script>
+</body>
+</html>
